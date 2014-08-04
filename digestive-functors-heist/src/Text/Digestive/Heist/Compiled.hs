@@ -135,8 +135,8 @@ formSplice' :: Monad m
             -> Splice m
 formSplice' ss as = deferMap return $ \getView -> do
     node <- getParamNode
-    let (_, attrs) = getRefAttributes node Nothing
-        tree = X.Element "form"
+    (_, attrs) <- getRefAttributes node Nothing
+    let tree = X.Element "form"
                  (addAttrs attrs
                     [ ("method", "POST")
                     , ("enctype", "${dfEncType}")
@@ -159,16 +159,23 @@ setDisabled ref view = if viewDisabled ref view then (("disabled",""):) else id
 
 
 --------------------------------------------------------------------------------
-getRefAttributes :: X.Node
-                 -> Maybe Text              -- ^ Optional default ref
-                 -> (Text, [(Text, Text)])  -- ^ (Ref, other attrs)
-getRefAttributes node defaultRef =
+getRefAttributes
+    :: Monad m
+    => X.Node
+    -> Maybe Text              -- ^ Optional default ref
+    -> HeistT n m (Text, [(Text, Text)])  -- ^ (Ref, other attrs)
+getRefAttributes node defaultRef = do
     case node of
-        X.Element _ as _ ->
-            let ref = fromMaybe (error $ show node ++ ": missing ref") $
-                        lookup "ref" as `mplus` defaultRef
-            in (ref, filter ((/= "ref") . fst) as)
-        _                -> (error "Wrong type of node!", [])
+      X.Element _ as _ -> do
+          let mref = lookup "ref" as `mplus` defaultRef
+          case mref of
+            Nothing -> do
+                tellSpliceError $ T.pack $ show node ++ ": missing ref"
+                return ("", as)
+            Just ref -> return (ref, filter ((/= "ref") . fst) as)
+      _                -> do
+          tellSpliceError "Wrong type of node!"
+          return ("", [])
 
 
 dfEncType :: (Monad m)
@@ -185,7 +192,7 @@ dfMaster :: Monad m
          -> RuntimeSplice m (View v) -> Splice m
 dfMaster f getView = do
     node <- getParamNode
-    let (ref, attrs) = getRefAttributes node Nothing
+    (ref, attrs) <- getRefAttributes node Nothing
     runAttrs <- runAttributesRaw attrs
     return $ yieldRuntime $ do
         view <- getView
@@ -222,7 +229,7 @@ dfInputGeneric as = dfTag $ \ref attrs value ->
 dfInputSubmit :: Monad m => Splice m
 dfInputSubmit = do
     node <- getParamNode
-    let (_, attrs) = getRefAttributes node Nothing
+    (_, attrs) <- getRefAttributes node Nothing
     runAttrs <- runAttributesRaw attrs
     return $ yieldRuntime $ do
         attrs' <- runAttrs
@@ -239,7 +246,7 @@ dfInputSubmit = do
 dfLabel :: Monad m => RuntimeSplice m (View v) -> Splice m
 dfLabel getView = do
     node <- getParamNode
-    let (ref, attrs) = getRefAttributes node Nothing
+    (ref, attrs) <- getRefAttributes node Nothing
     runAttrs <- runAttributesRaw attrs
     return $ yieldRuntime $ do
         view <- getView
@@ -396,10 +403,10 @@ dfInputRadio = dfMaster $ \ref attrs view -> do
 dfErrorList :: Monad m => RuntimeSplice m (View Text) -> Splice m
 dfErrorList getView = do
     node <- getParamNode
+    (ref, attrs) <- getRefAttributes node Nothing
     return $ yieldRuntime $ do
         view <- getView
-        let (ref, attrs) = getRefAttributes node Nothing
-            nodes = errorList (errors ref view) attrs
+        let nodes = errorList (errors ref view) attrs
         return $ X.renderHtmlFragment X.UTF8 nodes
 
 
@@ -419,10 +426,10 @@ dfErrorList getView = do
 dfChildErrorList :: Monad m => RuntimeSplice m (View Text) -> Splice m
 dfChildErrorList getView = do
     node <- getParamNode
+    (ref, attrs) <- getRefAttributes node (Just "")
     return $ yieldRuntime $ do
         view <- getView
-        let (ref, attrs) = getRefAttributes node (Just "")
-            nodes = errorList (childErrors ref view) attrs
+        let nodes = errorList (childErrors ref view) attrs
         return $ X.renderHtmlFragment X.UTF8 nodes
 
 
@@ -438,9 +445,9 @@ dfChildErrorList getView = do
 dfIfChildErrors :: (Monad m) => RuntimeSplice m (View v) -> Splice m
 dfIfChildErrors getView = do
     node <- getParamNode
+    (ref, _) <- getRefAttributes node $ Just ""
     return $ yieldRuntime $ do
         view <- getView
-        let (ref, _) = getRefAttributes node $ Just ""
         if null (childErrors ref view)
           then return mempty
           else return $ X.renderHtmlFragment X.UTF8 (X.childNodes node)
@@ -473,11 +480,11 @@ dfIfChildErrors getView = do
 dfSubView :: Monad m => RuntimeSplice m (View Text) -> Splice m
 dfSubView getView = do
     node <- getParamNode
+    (ref, _) <- getRefAttributes node Nothing
     p2 <- newEmptyPromise
     let action = yieldRuntimeEffect $ do
             view <- getView
-            let (ref, _) = getRefAttributes node Nothing
-                view' = subView ref view
+            let view' = subView ref view
             putPromise p2 view'
     res <- withLocalSplices (digestiveSplices (getPromise p2)) noSplices $
              runNodeList $ X.childNodes node
@@ -524,6 +531,7 @@ dfSingleListItem node attrs viewPromise = do
 dfInputList :: Monad m => RuntimeSplice m (View Text) -> Splice m
 dfInputList getView = do
     node <- getParamNode
+    (ref, _) <- getRefAttributes node Nothing
     itemsPromise <- newEmptyPromise
     refPromise <- newEmptyPromise
     indicesPromise <- newEmptyPromise
@@ -580,8 +588,7 @@ dfInputList getView = do
     -- The runtime action that gets the right data and puts it in promises.
     let action = yieldRuntimeEffect $ do
           view <- getView
-          let (ref, _) = getRefAttributes node Nothing
-              listRef  = absoluteRef ref view
+          let listRef  = absoluteRef ref view
               items = listSubViews ref view
               tview = makeListSubView ref (-1) view
           putPromise refPromise listRef
